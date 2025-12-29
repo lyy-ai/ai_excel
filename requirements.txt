@@ -1,0 +1,7 @@
+# Excel折线图绘制工具 - 核心依赖
+# 最小安装包，其他依赖会自动安装
+
+pandas>=2.0.0
+openpyxl>=3.0.0
+matplotlib>=3.7.0
+streamlit>=1.50.0
