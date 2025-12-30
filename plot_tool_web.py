@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Excel折线图绘制工具 (Web版本)
+光谱数据折线图绘制工具 (Web版本)
+支持UV-Vis光谱TXT文件批量上传和交互式分析
 基于Streamlit的现代化Web界面
 """
 
@@ -10,15 +11,115 @@ import matplotlib.pyplot as plt
 import matplotlib
 import plotly.graph_objects as go
 import plotly.express as px
-from io import BytesIO
+from io import BytesIO, StringIO
+import os
 
 # 配置matplotlib中文支持
 matplotlib.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'SimHei', 'STHeiti', 'DejaVu Sans']
 matplotlib.rcParams['axes.unicode_minus'] = False
 
+
+def parse_txt_file(uploaded_file):
+    """
+    解析UV-Vis光谱仪TXT文件
+    返回DataFrame，包含波长和吸收值两列
+    """
+    try:
+        # 尝试不同的编码读取文件
+        encodings = ['gbk', 'utf-8', 'gb2312', 'utf-16']
+        content = None
+
+        for encoding in encodings:
+            try:
+                uploaded_file.seek(0)
+                content = uploaded_file.read().decode(encoding)
+                break
+            except (UnicodeDecodeError, UnicodeError):
+                continue
+
+        if content is None:
+            st.error(f"无法读取文件 {uploaded_file.name}，编码格式不支持")
+            return None
+
+        # 查找数据开始的行（包含"波长"和"吸收"关键词的行）
+        lines = content.split('\n')
+        data_start_idx = -1
+
+        for idx, line in enumerate(lines):
+            if '波长' in line or 'Wavelength' in line.lower():
+                data_start_idx = idx + 1
+                break
+
+        if data_start_idx == -1:
+            st.error(f"文件 {uploaded_file.name} 格式不正确，未找到数据起始行")
+            return None
+
+        # 提取数据部分
+        data_lines = []
+        for line in lines[data_start_idx:]:
+            line = line.strip()
+            if line and ',' in line:
+                parts = line.split(',')
+                if len(parts) >= 2:
+                    try:
+                        wavelength = float(parts[0])
+                        absorbance = float(parts[1])
+                        data_lines.append([wavelength, absorbance])
+                    except ValueError:
+                        continue
+
+        if not data_lines:
+            st.error(f"文件 {uploaded_file.name} 中未找到有效数据")
+            return None
+
+        # 创建DataFrame
+        df = pd.DataFrame(data_lines, columns=['Wavelength', 'Absorbance'])
+        return df
+
+    except Exception as e:
+        st.error(f"解析文件 {uploaded_file.name} 时出错: {str(e)}")
+        return None
+
+
+def merge_txt_files(uploaded_files):
+    """
+    合并多个TXT文件的数据
+    第一列为波长，后续列为各文件的吸收值
+    """
+    if not uploaded_files:
+        return None
+
+    # 解析所有文件
+    dfs = []
+    file_names = []
+
+    for uploaded_file in uploaded_files:
+        df = parse_txt_file(uploaded_file)
+        if df is not None:
+            # 提取文件名（不含扩展名）作为列名
+            file_name = os.path.splitext(uploaded_file.name)[0]
+            file_names.append(file_name)
+            dfs.append(df)
+
+    if not dfs:
+        return None
+
+    # 以第一个文件的波长为基准
+    merged_df = dfs[0][['Wavelength']].copy()
+
+    # 合并所有文件的吸收值
+    for idx, df in enumerate(dfs):
+        # 确保波长匹配（使用merge）
+        df_temp = df.copy()
+        df_temp.columns = ['Wavelength', file_names[idx]]
+        merged_df = pd.merge(merged_df, df_temp, on='Wavelength', how='inner')
+
+    return merged_df
+
+
 # 页面配置
 st.set_page_config(
-    page_title="Excel折线图绘制工具",
+    page_title="光谱数据绘图工具",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -51,27 +152,39 @@ st.markdown("""
 
 def main():
     # 页面标题
-    st.markdown('<div class="main-header">📊 Excel折线图绘制工具</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-header">专为科研人员设计的专业绘图工具</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header">📊 光谱数据折线图绘制工具</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-header">支持UV-Vis光谱TXT文件批量上传和交互式分析</div>', unsafe_allow_html=True)
 
     # 侧边栏 - 文件上传和数据选择
     with st.sidebar:
         st.header("📁 数据加载")
 
-        uploaded_file = st.file_uploader(
-            "选择Excel文件",
-            type=['xlsx', 'xls'],
-            help="支持 .xlsx 和 .xls 格式"
+        uploaded_files = st.file_uploader(
+            "选择光谱TXT文件（可多选）",
+            type=['txt'],
+            accept_multiple_files=True,
+            help="支持UV-Vis光谱仪导出的TXT格式文件，可一次上传多个文件"
         )
 
-        if uploaded_file:
+        if uploaded_files:
             try:
-                df = pd.read_excel(uploaded_file)
-                st.success(f"✅ 成功加载 {len(df)} 行数据")
+                # 合并所有TXT文件
+                df = merge_txt_files(uploaded_files)
+
+                if df is None:
+                    st.error("❌ 无法解析文件，请检查文件格式")
+                    return
+
+                st.success(f"✅ 成功加载 {len(uploaded_files)} 个文件，共 {len(df)} 个数据点")
+
+                # 显示文件列表
+                with st.expander("📄 已加载文件", expanded=False):
+                    for idx, file in enumerate(uploaded_files, 1):
+                        st.write(f"{idx}. {file.name}")
 
                 # 显示数据预览
                 with st.expander("📋 数据预览", expanded=False):
-                    st.dataframe(df.head(10))
+                    st.dataframe(df.head(20))
 
                 st.divider()
 
@@ -80,20 +193,21 @@ def main():
 
                 columns = df.columns.tolist()
 
-                # X轴选择
+                # X轴选择（默认为Wavelength）
                 x_col = st.selectbox(
                     "横坐标 (X轴)",
                     columns,
-                    help="选择作为横坐标的列"
+                    index=0,
+                    help="通常选择波长作为横坐标"
                 )
 
-                # Y轴选择
+                # Y轴选择（默认选择所有吸收值列）
                 default_y = [col for col in columns if col != x_col]
                 y_cols = st.multiselect(
                     "纵坐标 (Y轴，可多选)",
                     columns,
                     default=default_y,
-                    help="可以选择多个列在同一图表中显示"
+                    help="可以选择多个样品进行对比"
                 )
 
                 if not y_cols:
@@ -101,14 +215,14 @@ def main():
                     return
 
             except Exception as e:
-                st.error(f"❌ 读取文件失败: {str(e)}")
+                st.error(f"❌ 处理文件失败: {str(e)}")
                 return
         else:
-            st.info("👆 请上传Excel文件开始")
+            st.info("👆 请上传光谱TXT文件开始\n\n支持的文件格式：\n- UV-Vis光谱仪TXT文件\n- 可一次上传多个文件进行对比")
             return
 
     # 主内容区
-    if uploaded_file and y_cols:
+    if uploaded_files and y_cols:
         # 创建两列布局
         col1, col2 = st.columns([1, 2])
 
@@ -132,9 +246,9 @@ def main():
 
             # 标题和标签
             with st.expander("📝 标题和标签", expanded=True):
-                title = st.text_input("图表标题", value="Excel数据折线图")
-                xlabel = st.text_input("X轴标签", value=x_col)
-                ylabel = st.text_input("Y轴标签", value="Value")
+                title = st.text_input("图表标题", value="UV-Vis吸收光谱")
+                xlabel = st.text_input("X轴标签", value="Wavelength (nm)")
+                ylabel = st.text_input("Y轴标签", value="Absorbance")
 
             # 字体设置
             with st.expander("🔤 字体大小", expanded=True):
@@ -417,19 +531,26 @@ def main():
     with st.expander("💡 使用提示", expanded=False):
         st.markdown("""
         ### 快速开始
-        1. **上传文件** - 在左侧上传Excel文件
-        2. **选择数据** - 选择X轴和Y轴列
+        1. **上传文件** - 在左侧上传UV-Vis光谱TXT文件（可多选）
+        2. **自动合并** - 程序自动合并多个文件，波长为X轴，各文件吸收值为Y轴
         3. **选择模式** - 交互式图表（数据探索）或静态图表（论文发表）
         4. **调整样式** - 自定义标题、字体、颜色等
         5. **下载图片** - 支持多种格式
 
+        ### 文件格式说明
+        - 支持UV-Vis光谱仪导出的TXT文件
+        - 文件中应包含"波长"和"吸收值"数据列
+        - 可一次上传多个样品文件进行对比
+        - 自动使用文件名作为图例标签
+
         ### 图表模式选择
 
-        **交互式图表 (Plotly) - 推荐用于数据探索**
-        - ✅ 支持鼠标框选局部放大
-        - ✅ 支持滚轮缩放
+        **交互式图表 (Plotly) - 推荐用于光谱数据探索**
+        - ✅ 支持鼠标框选局部波段放大
+        - ✅ 支持滚轮缩放查看吸收峰细节
         - ✅ 支持拖动平移
         - ✅ 双击重置视图
+        - ✅ 悬停显示精确波长和吸收值
         - 📥 下载格式：HTML（保留交互功能）、PNG（通过工具栏）
 
         **静态图表 (Matplotlib) - 推荐用于论文发表**
@@ -440,32 +561,31 @@ def main():
 
         ### 推荐设置
 
-        **数据探索和分析**
+        **光谱数据探索**
         - 模式: 交互式图表 (Plotly)
-        - 标记点: 4-6（便于识别数据点）
-        - 使用框选放大查看局部细节
+        - 线宽: 2.0
+        - 标记点: 无（光谱数据密集）
+        - 使用框选放大查看吸收峰细节
 
         **论文发表**
         - 模式: 静态图表 (Matplotlib)
         - 格式: PDF 或 SVG
         - 标题字号: 16
         - 坐标轴字号: 14
-        - 线宽: 2.0
+        - 线宽: 1.5-2.0
         - 分辨率: 300-600 DPI
 
-        **演示汇报**
-        - 模式: 交互式图表 (Plotly)
-        - 标题字号: 18
-        - 线宽: 2.5-3.0
-        - 标记点: 6-8
-        - 可在演示时实时放大细节
+        **多样品对比**
+        - 一次上传多个TXT文件
+        - 使用不同颜色自动区分
+        - 可选择性显示/隐藏某些样品
+        - 使用交互式图表便于对比吸收峰位置
         """)
 
     st.markdown("---")
     st.markdown(
         "<div style='text-align: center; color: #666;'>"
-        "📊 Excel折线图绘制工具 v3.0 | 支持交互式缩放 | 基于 Streamlit 构建 | "
-        "<a href='https://github.com' target='_blank'>查看文档</a>"
+        "📊 光谱数据折线图绘制工具 v4.0 | 支持多TXT文件上传和交互式缩放 | 基于 Streamlit 构建"
         "</div>",
         unsafe_allow_html=True
     )
